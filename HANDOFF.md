@@ -1,24 +1,26 @@
 # HANDOFF
 
 ## Стан
-Повний вихідний код нативного macOS-аппу Clip (SwiftUI + yt-dlp). Проєкт створено на Windows — компіляції локально немає. Єдиний шлях перевірки — GitHub Actions (macos-14).
+Windows GUI-завантажувач відео (PySide6 + yt-dlp + ffmpeg), один файл clip_app.py.
+macOS/Swift-версію видалено з репо за рішенням користувача (була попередньо запушена).
 
 ## Що зроблено
-- project.yml (xcodegen): macOS 14, Swift 5.9, hardened runtime entitlements, preBuildScript fetch_binaries
-- scripts/fetch_binaries.sh: yt-dlp_macos universal + ffmpeg/ffprobe (evermeet x86_64, lipo з arm64 за можливості)
-- Swift: ClipApp (menu bar + clipboard + close-hides), ClipTheme (GlassCard/GlassProgressBar/pills), Models (Platform/DownloadItem/History/Metadata), ViewModels (MainVM/DownloadVM, черга max 3), Services (YTDLPService actor, FFmpegService, ProcessRunner, URLDetector, ClipboardMonitor, RedditResolver, UpdateService, MenuBarController+popover, TranslucentWindowBackground), Views (ContentView, URLInput, VideoPreview, FormatPicker, ClipRange drag handles, DownloadSection/List, History, Settings, MenuBarView)
-- CI workflow: xcodegen → fetch binaries → xcodebuild Release → zip артефакт
+- clip_app.py: URL-картка (Вставити/Аналізувати/Ctrl+V), прев'ю (thumbnail через QNetworkAccessManager),
+  опції (формат/якість/розмір/кліп-слайдери), черга max 3 (DownloadWorker QThread, terminate для cancel),
+  прогрес-бари, історія в JSON, налаштування папки в JSON, темна glass-тема через QSS.
+- Бінарники: shutil.which + WinGet fallback (yt-dlp, ffmpeg, ffprobe є на машині).
+- Reddit фікс через api.reddit.com; Instagram --cookies-from-browser chrome.
 
 ## Перевірки
-- Локально НЕ компілювалося (Windows, немає Xcode/Swift)
-- Очікувана перевірка: green build у GitHub Actions; артефакт Clip-macOS.zip
+- py_compile OK; offscreen smoke-тест 12 с без крашів (QT_QPA_PLATFORM=offscreen, exit 124 = timeout живого процесу).
+- Живий тест із реальним URL ще не проведений — зробити першим ділом.
 
-## Ризики
-- ~20 Swift-файлів писані без компілятора: перший CI-білд може падати на типових дрібницях (Sendable-замикання, Color(nsColor:) конверсії) — правиться ітераційно по логах CI
-- ffmpeg arm64 залежить від osxexperts.net (сторонній хост); fallback Rosetta
-- У DownloadRunner поле cancellations не використовується до кінця (cancel() має no-op для активних процесів поза YTDLPService) — якщо cancel не працює в CI-білді, треба пробросити ProcessRunner через holder
+## Ризики / відомі місця
+- Цільовий розмір рахується двопрохідно приблизно (bitrate budget), точність ±10%.
+- Кліп для mp3 не застосовується (mp3 = тільки аудіо).
+- Instagram cookies працюють лише якщо користувач залогінений у Chrome.
+- Скасування під час ffmpeg-паса не перериває ffmpeg (тільки yt-dlp процес).
 
 ## Наступні кроки
-1. Запушити в GitHub (Alexdrako/Clip) → дочекатись CI
-2. За фейлом — читати build.log, правити, репушити
-3. Після green: завантажити артефакт, xattr -cr, запустити
+1. Живий тест: python clip_app.py → завантажити щось з YouTube.
+2. Опційно: PyInstaller --onefile для exe без консолі.

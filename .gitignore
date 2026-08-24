@@ -1,8 +1,7 @@
 .DS_Store
 build/
 DerivedData/
-*.xcodeproj
-xcuserdata/
-*.xcuserstate
-Clip/Resources/bin/*
-!Clip/Resources/bin/.gitkeep
+__pycache__/
+*.pyc
+clip_history.json
+clip_settings.json
