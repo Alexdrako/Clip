@@ -131,6 +131,223 @@ def reddit_direct_media(url: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- video tools
+
+def _run_ffmpeg(args: list[str], timeout: int = 3600):
+    p = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                       creationflags=NO_WINDOW)
+    if p.returncode != 0:
+        raise RuntimeError("ffmpeg: " + (p.stderr or "")[-300:])
+
+
+def probe_video_info(path: str) -> dict:
+    """duration/fps/width/height/has_audio via one ffprobe call."""
+    try:
+        out = subprocess.run(
+            [FFPROBE, "-v", "error", "-show_entries",
+             "format=duration:stream=width,height,r_frame_rate,codec_type",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW,
+        ).stdout
+        data = json.loads(out)
+    except Exception:
+        return {}
+    info = {"duration": float((data.get("format") or {}).get("duration", 0) or 0),
+            "has_audio": False, "width": 0, "height": 0, "fps": 24.0}
+    for s in data.get("streams", []):
+        if s.get("codec_type") == "video" and not info["width"]:
+            info["width"] = s.get("width", 0)
+            info["height"] = s.get("height", 0)
+            num, _, den = (s.get("r_frame_rate") or "24/1").partition("/")
+            try:
+                info["fps"] = float(num) / float(den or 1)
+            except Exception:
+                info["fps"] = 24.0
+        elif s.get("codec_type") == "audio":
+            info["has_audio"] = True
+    return info
+
+
+def detect_crop_box(path: str, info: dict) -> tuple[int, int, int, int] | None:
+    """Auto-detect black bars via ffmpeg's cropdetect. None if nothing to crop."""
+    fps = info.get("fps") or 24.0
+    duration = info.get("duration") or 5
+    sample_frames = min(90, max(10, int(duration * fps)))
+    p = subprocess.run(
+        [FFMPEG, "-i", path, "-vf", "cropdetect=24:16:0", "-an",
+         "-frames:v", str(sample_frames), "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW,
+    )
+    matches = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", p.stderr)
+    if not matches:
+        return None
+    w, h, x, y = (int(v) for v in matches[-1])
+    if w >= info.get("width", w) and h >= info.get("height", h):
+        return None
+    return w, h, x, y
+
+
+def find_loop_seam(path: str, info: dict, min_loop_s: float = 3.0):
+    """Sample small grayscale frames and find the best-matching early/late
+    frame pair for a natural loop cut. Pure stdlib (no numpy). Returns
+    (start_frame, end_frame, fps) or None if no good pair / clip too short."""
+    fps = info.get("fps") or 24.0
+    duration = info.get("duration") or 0
+    if duration < min_loop_s + 1:
+        return None
+    sw, sh = 40, 22
+    proc = subprocess.run(
+        [FFMPEG, "-i", path, "-vf", f"fps={fps},scale={sw}:{sh},format=gray",
+         "-f", "rawvideo", "-"],
+        capture_output=True, timeout=60, creationflags=NO_WINDOW,
+    )
+    raw = proc.stdout
+    frame_size = sw * sh
+    n = len(raw) // frame_size
+    if n < 10:
+        return None
+    frames = [raw[i * frame_size:(i + 1) * frame_size] for i in range(n)]
+    min_gap = max(1, int(min_loop_s * fps))
+    third = max(1, n // 3)
+    late_start = max(third, n - third)
+    best = None
+    for i in range(0, third):
+        fi = frames[i]
+        for j in range(late_start, n):
+            if j - i < min_gap:
+                continue
+            diff = sum(a - b if a > b else b - a for a, b in zip(fi, frames[j]))
+            if best is None or diff < best[0]:
+                best = (diff, i, j)
+    if not best:
+        return None
+    _, i, j = best
+    return i, j, fps
+
+
+def render_loop(path: str, out_path: str, info: dict, mode: str):
+    fps = info.get("fps") or 24.0
+    has_audio = info.get("has_audio", False)
+    duration = info.get("duration") or 0
+
+    if mode == "boomerang":
+        rev = out_path + ".rev.mp4"
+        args_rev = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", "reverse"]
+        if has_audio:
+            args_rev += ["-af", "areverse"]
+        args_rev += ["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]
+        if has_audio:
+            args_rev += ["-c:a", "aac"]
+        args_rev.append(rev)
+        _run_ffmpeg(args_rev)
+        if has_audio:
+            maps = "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]"
+        else:
+            maps = "[0:v][1:v]concat=n=2:v=1[v]"
+        args = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", path, "-i", rev,
+                "-filter_complex", maps, "-map", "[v]"]
+        if has_audio:
+            args += ["-map", "[a]"]
+        args += ["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]
+        if has_audio:
+            args += ["-c:a", "aac"]
+        args.append(out_path)
+        try:
+            _run_ffmpeg(args)
+        finally:
+            Path(rev).unlink(missing_ok=True)
+        return
+
+    if mode == "smart":
+        seam = find_loop_seam(path, info)
+        if seam is None:
+            mode = "crossfade"
+        else:
+            i, j, sfps = seam
+            seg_start, seg_end = i / sfps, j / sfps
+    if mode == "crossfade":
+        seg_start, seg_end = 0.0, duration
+
+    seg_len = seg_end - seg_start
+    fade = min(1.0 if mode == "crossfade" else 0.2, max(0.05, seg_len * 0.15))
+    offset = seg_len - fade
+
+    filt = (
+        f"[0:v]trim={seg_start:.6f}:{seg_end:.6f},setpts=PTS-STARTPTS[vseg];"
+        f"[vseg]split[va][vb];"
+        f"[va]trim=0:{fade:.6f},setpts=PTS-STARTPTS[vstart];"
+        f"[vb]trim=0:{seg_len:.6f},setpts=PTS-STARTPTS[vfull];"
+        f"[vfull][vstart]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f},format=yuv420p[vout]"
+    )
+    maps = ["-map", "[vout]"]
+    if has_audio:
+        delay_ms = int(offset * 1000)
+        filt += (
+            f";[0:a]atrim={seg_start:.6f}:{seg_end:.6f},asetpts=PTS-STARTPTS[aseg];"
+            f"[aseg]asplit[aa][ab];"
+            f"[aa]atrim=0:{fade:.6f},asetpts=PTS-STARTPTS,afade=t=in:st=0:d={fade:.6f},"
+            f"adelay={delay_ms}|{delay_ms}[astart];"
+            f"[ab]atrim=0:{seg_len:.6f},asetpts=PTS-STARTPTS,afade=t=out:st={offset:.6f}:d={fade:.6f}[afull];"
+            f"[afull][astart]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
+        maps += ["-map", "[aout]"]
+    args = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", path,
+            "-filter_complex", filt] + maps + ["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]
+    if has_audio:
+        args += ["-c:a", "aac"]
+    args.append(out_path)
+    _run_ffmpeg(args)
+
+
+def render_crop(path: str, out_path: str, info: dict, box: tuple[int, int, int, int]):
+    w, h, x, y = box
+    has_audio = info.get("has_audio", False)
+    args = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", path,
+            "-vf", f"crop={w}:{h}:{x}:{y}",
+            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]
+    args += ["-c:a", "copy"] if has_audio else ["-an"]
+    args.append(out_path)
+    _run_ffmpeg(args)
+
+
+class VideoToolWorker(QThread):
+    done_sig = Signal(str, object)   # output_path (or ""), error-or-None
+
+    def __init__(self, src: str, save_dir: Path, op: str, loop_mode: str = "smart"):
+        super().__init__()
+        self.src = src
+        self.save_dir = save_dir
+        self.op = op            # "loop" | "crop"
+        self.loop_mode = loop_mode
+
+    def run(self):
+        try:
+            info = probe_video_info(self.src)
+            if not info.get("width"):
+                raise RuntimeError("не вдалося прочитати відео")
+            stem = re.sub(r"[\\/:*?\"<>|]", " ", Path(self.src).stem).strip() or "video"
+            if self.op == "crop":
+                box = detect_crop_box(self.src, info)
+                if not box:
+                    raise RuntimeError("чорних смуг не знайдено")
+                out = self._dest(f"{stem}_cropped.mp4")
+                render_crop(self.src, str(out), info, box)
+            else:
+                out = self._dest(f"{stem}_loop.mp4")
+                render_loop(self.src, str(out), info, self.loop_mode)
+            self.done_sig.emit(str(out), None)
+        except Exception as e:
+            self.done_sig.emit("", str(e)[-300:])
+
+    def _dest(self, name: str) -> Path:
+        dest = self.save_dir / name
+        i = 1
+        while dest.exists():
+            dest = self.save_dir / f"{dest.stem}-{i}{dest.suffix}"
+            i += 1
+        return dest
+
+
 class Settings:
     def __init__(self):
         self.data = {"save_dir": str(DOWNLOADS)}
