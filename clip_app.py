@@ -806,6 +806,7 @@ class MainWindow(QMainWindow):
         self.meta: dict = {}
         self.tasks: dict[int, dict] = {}
         self.next_task_id = 1
+        self.vt_path = ""
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -818,6 +819,7 @@ class MainWindow(QMainWindow):
         self.preview.setVisible(False)
         root.addWidget(self.preview)
         root.addWidget(self._card_options())
+        root.addWidget(self._card_video_tools())
         root.addWidget(self._card_lists(), stretch=1)
         foot = dim_label(
             f"Зберігає у: {self.settings.save_dir}   ·   "
@@ -915,6 +917,42 @@ class MainWindow(QMainWindow):
         self.clipbar = ClipRangeBar()
         self.clipbar.setVisible(False)
         outer.addWidget(self.clipbar)
+        return card
+
+    def _card_video_tools(self) -> QFrame:
+        card = make_card()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(10)
+
+        outer.addWidget(dim_label("🎬 Інструменти відео — будь-який локальний файл"))
+
+        row = QHBoxLayout(spacing=8)
+        b_open = QPushButton("Відкрити файл…")
+        b_open.clicked.connect(self.vt_choose_file)
+        self.vt_path_lbl = dim_label("Файл не обрано")
+        row.addWidget(b_open)
+        row.addWidget(self.vt_path_lbl, stretch=1)
+        outer.addLayout(row)
+
+        row2 = QHBoxLayout(spacing=10)
+        row2.addWidget(dim_label("Режим петлі"))
+        self.vt_loop_mode = QComboBox()
+        self.vt_loop_mode.addItems(["Розумний (авто)", "Кросфейд", "Бумеранг"])
+        row2.addWidget(self.vt_loop_mode)
+        row2.addStretch(1)
+        self.b_vt_crop = QPushButton("▭ Прибрати чорні смуги")
+        self.b_vt_crop.setEnabled(False)
+        self.b_vt_crop.clicked.connect(lambda: self.vt_run("crop"))
+        self.b_vt_loop = QPushButton("🔁 Зробити loop")
+        self.b_vt_loop.setEnabled(False)
+        self.b_vt_loop.clicked.connect(lambda: self.vt_run("loop"))
+        row2.addWidget(self.b_vt_crop)
+        row2.addWidget(self.b_vt_loop)
+        outer.addLayout(row2)
+
+        self.vt_status = dim_label("")
+        outer.addWidget(self.vt_status)
         return card
 
     def _card_lists(self) -> QFrame:
@@ -1032,6 +1070,46 @@ class MainWindow(QMainWindow):
         if d:
             self.settings.data["save_dir"] = d
             self.settings.save()
+
+    # -- video tools ------------------------------------------------------
+    def vt_choose_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Обрати відео", str(self.settings.save_dir),
+            "Відео (*.mp4 *.mov *.webm *.mkv *.avi)")
+        if not path:
+            return
+        self.vt_path = path
+        self.vt_path_lbl.setText(Path(path).name)
+        self.b_vt_loop.setEnabled(True)
+        self.b_vt_crop.setEnabled(True)
+        self.vt_status.setText("")
+
+    def vt_run(self, op: str):
+        if not self.vt_path:
+            return
+        self.b_vt_loop.setEnabled(False)
+        self.b_vt_crop.setEnabled(False)
+        self.vt_status.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        self.vt_status.setText("шукаю точку петлі…" if op == "loop" else "шукаю чорні смуги…")
+        mode_map = {"Розумний (авто)": "smart", "Кросфейд": "crossfade", "Бумеранг": "boomerang"}
+        loop_mode = mode_map[self.vt_loop_mode.currentText()]
+        self.vt_worker = VideoToolWorker(self.vt_path, self.settings.save_dir, op, loop_mode)
+        self.vt_worker.done_sig.connect(self.vt_done)
+        self.vt_worker.start()
+
+    def vt_done(self, out_path: str, err: object):
+        self.b_vt_loop.setEnabled(True)
+        self.b_vt_crop.setEnabled(True)
+        if err:
+            self.vt_status.setStyleSheet(f"color:{RED}; font-size:11px;")
+            self.vt_status.setText(f"помилка: {err}")
+            return
+        self.vt_status.setStyleSheet(f"color:{GREEN}; font-size:11px;")
+        self.vt_status.setText(f"готово ✓ {Path(out_path).name}")
+        spec = TaskSpec(url=self.vt_path, title=Path(out_path).name,
+                         platform="Video Tools", color=ACCENT)
+        spec.output_path = out_path
+        self.history.add(spec)
 
     def switch_tab(self, idx: int):
         self.tab_dl.setChecked(idx == 0)
