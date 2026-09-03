@@ -23,6 +23,24 @@ python C:\Users\alexd\projects\Clip\clip_app.py
 - Reddit: yt-dlp extractor зламаний → прямий резолв через api.reddit.com
 - Instagram: --cookies-from-browser chrome
 
+## Batch-конвеєр (batch.py)
+Обробка вже наявних відео пресетами, без GUI:
+```bash
+python batch.py IN_DIR OUT_DIR --preset vertical                       # 9:16 під TikTok/Reels/Shorts
+python batch.py IN_DIR OUT_DIR --preset horizontal                     # 16:9
+python batch.py IN_DIR OUT_DIR --preset audio                          # витягти mp3
+python batch.py IN_DIR OUT_DIR --preset copy --size-mb 50              # стиснути під розмір
+python batch.py IN_DIR OUT_DIR --preset vertical --watermark X,Y,W,H   # + видалити watermark (delogo)
+```
+`--watermark X,Y,W,H` — координати фіксованого прямокутника (лого/нашивка) в пікселях від
+лівого верхнього кута вихідного відео; підбираються вручну (напр. через `ffprobe`/перегляд кадру).
+Це `ffmpeg delogo` — інтерполяція сусідніх пікселів, не AI-inpainting: працює добре на
+статичному лого на рівному фоні, гірше — на складному/рухомому фоні.
+
+Генерація нового контенту через API/MCP — поки не реалізовано (свідомо відкладено).
+
 ## Файли
-- clip_app.py — весь апп (один файл)
+- clip_app.py — GUI-застосунок (завантаження)
+- ffmpeg_core.py — спільні ffmpeg/ffprobe хелпери (бінарники, run, probe_duration)
+- batch.py — CLI batch-конвеєр для обробки наявних відео (пресети + watermark removal)
 - clip_history.json / clip_settings.json — створюються поруч при роботі

@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
+from ffmpeg_core import find_binary, probe_duration, NO_WINDOW, FFMPEG, FFPROBE
+
 # ---------------------------------------------------------------- constants
 
 APP_DIR = Path(__file__).resolve().parent
@@ -38,28 +40,8 @@ DOWNLOADS = Path.home() / "Downloads"
 
 MAX_CONCURRENT = 3
 HISTORY_LIMIT = 200
-NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-
-
-# ---------------------------------------------------------------- binaries
-
-def find_binary(name: str) -> str:
-    exe = name + (".exe" if os.name == "nt" else "")
-    found = shutil.which(name)
-    if found:
-        return found
-    for base in (Path.home() / "AppData/Local/Microsoft/WinGet/Packages",
-                 Path("C:/Program Files")):
-        if base.exists():
-            hits = list(base.rglob(exe))[:1]
-            if hits:
-                return str(hits[0])
-    return name
-
 
 YTDLP = find_binary("yt-dlp")
-FFMPEG = find_binary("ffmpeg")
-FFPROBE = find_binary("ffprobe")
 
 # ---------------------------------------------------------------- utils
 
@@ -95,18 +77,6 @@ def fmt_duration(sec: float | None) -> str:
     sec = int(round(sec))
     h, rem = divmod(sec, 3600)
     return f"{h}:{rem // 60:02d}:{rem % 60:02d}" if h else f"{sec // 60}:{sec % 60:02d}"
-
-
-def probe_duration(path: str) -> float:
-    try:
-        out = subprocess.run(
-            [FFPROBE, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW,
-        ).stdout.strip()
-        return float(out)
-    except Exception:
-        return 0.0
 
 
 def reddit_direct_media(url: str) -> str | None:
