@@ -1,0 +1,12 @@
+{
+    "schema_version": 2,
+    "commit": "f7f5dcbf9e2dd6f1c737b1c9c77a396bb302aec0",
+    "indexed_at": "2026-09-25T16:18:41Z",
+    "project": "C-Users-alexd-projects-github-Clip",
+    "nodes": 115,
+    "edges": 328,
+    "original_size": 2228224,
+    "compressed_size": 238954,
+    "compression_level": 9,
+    "reconcile_basis": "git-clean-head"
+}
